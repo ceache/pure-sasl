@@ -1,4 +1,5 @@
 import base64
+import codecs
 import hashlib
 import hmac
 import random
@@ -263,17 +264,21 @@ class DigestMD5Mechanism(Mechanism):
     allows_anonymous = False
     uses_plaintext = False
 
+    _default_charset = 'iso8859-1'
+
     def __init__(self, sasl, username=None, password=None, **props):
         Mechanism.__init__(self, sasl)
         self.username = username
         self.password = password
 
+        self._charset = None
         self._digest_uri = None
         self._a1 = None
 
     def dispose(self):
         self._digest_uri = None
         self._a1 = None
+        self._charset = None
 
         self.password = None
         self.key_hash = None
@@ -300,10 +305,14 @@ class DigestMD5Mechanism(Mechanism):
         if getattr(self, 'realm', None) is not None:
             resp['realm'] = quote(self.realm)
 
-        resp['username'] = quote(bytes(self.username))
+        if (self._charset is not None
+                and self._charset != DigestMD5Mechanism._default_charset):
+            resp['charset'] = bytes(self._charset)
+
+        resp['username'] = quote(bytes(self.username.encode(self._charset)))
         resp['nonce'] = quote(self.nonce)
         if self.nc == 0:
-            self.cnonce = bytes('%s' % random.random())[2:]
+            self.cnonce = bytes('%s' % random.getrandbits(64))
         resp['cnonce'] = quote(self.cnonce)
         self.nc += 1
         resp['nc'] = bytes('%08x' % self.nc)
@@ -455,6 +464,19 @@ class DigestMD5Mechanism(Mechanism):
         if 'maxbuf' in challenge_dict:
             self.max_buffer = min(
                 self.sasl.max_buffer, int(challenge_dict['maxbuf']))
+
+        # NOTE: rfc2831#section-2.1.1 charset: This directive, if present,
+        # specifies that the server supports UTF-8 encoding for the username
+        # and password. If not present, the username and password must be
+        # encoded in ISO 8859-1
+        if 'charset' in challenge_dict:
+            proposed = challenge_dict['charset'].decode()
+            try:
+                self._charset = codecs.lookup(proposed).name
+            except LookupError:
+                raise SASLProtocolException(
+                    'Unsupported charset: %r' % proposed
+                )
 
         # TODO: rfc2831#section-2.1.1 algorithm: This directive is required and
         # MUST appear exactly once; if not present, or if multiple instances
